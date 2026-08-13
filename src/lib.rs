@@ -28,14 +28,6 @@
 //! Only [`Severity::Error`] causes a row to be dropped, and that is reserved for
 //! records that cannot be keyed at all.
 //!
-//! # The publication date is not in the file
-//!
-//! The CSV carries no publication date, and the ISO download URL is unversioned
-//! — so a file on disk cannot tell you which vintage it is. You must supply the
-//! date via [`LoadOptions`]. It is required rather than optional because
-//! [`IssueKind::FutureDatedRecord`], [`MicRegistry::is_pending`], and
-//! [`MicRegistry::as_of`] are all meaningless without it.
-//!
 //! # Pending records
 //!
 //! ISO publishes on the second Monday of each month; the changes in that file
@@ -45,6 +37,47 @@
 //!
 //! This is normal, not an error. Use [`MicRegistry::as_of`] to get the registry
 //! as it stands on a given date rather than serving pending state as current.
+//!
+//! # The publication date
+//!
+//! It is not a column in the CSV, and the ISO download URL is unversioned, so
+//! nothing about a file on disk announces which vintage it is. Supply it:
+//!
+//! ```no_run
+//! # use diurn_mic::{LoadOptions, MicRegistry};
+//! # use jiff::civil::date;
+//! # let file = std::fs::File::open("x.csv")?;
+//! MicRegistry::load_csv(file, LoadOptions::new(date(2026, 8, 10)))?;
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! It matters because [`IssueKind::FutureDatedRecord`],
+//! [`MicRegistry::is_pending`], and [`MicRegistry::as_of`] all key off it.
+//!
+//! ## Recovering it from the file
+//!
+//! When you do not have the date — a download that arrived without one — it can
+//! usually be recovered, because the publication cycle above leaves a
+//! fingerprint in the data. The fourth Monday is a fortnight after the second,
+//! so the latest `last_updated` in a file with pending records implies the
+//! publication date exactly:
+//!
+//! ```no_run
+//! # use diurn_mic::{LoadOptions, MicRegistry, PublishedSource};
+//! # let file = std::fs::File::open("x.csv")?;
+//! let outcome = MicRegistry::load_csv(file, LoadOptions::infer())?;
+//! assert_eq!(
+//!     outcome.registry.published_source(),
+//!     PublishedSource::InferredFromEffectiveDate
+//! );
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! Prefer a known date when you have one. Inference is best-effort and
+//! clock-free, so it cannot distinguish a current effective date from a stale
+//! one left over from an earlier cycle — see
+//! [`publication_date_from_effective`] for the limits, and check
+//! [`MicRegistry::published_source`] to see which rule applied.
 
 mod category;
 mod country;
@@ -69,3 +102,12 @@ pub use published::{publication_date_from_effective, PublishedSource};
 pub use record::{MicKind, MicRecord, Status};
 pub use registry::MicRegistry;
 pub use validate::validate;
+
+/// Compiles the README's examples as doctests without publishing them into the
+/// API docs.
+///
+/// The README described an API that had never existed for a while before anyone
+/// noticed. This makes that a build failure instead of a reading exercise.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

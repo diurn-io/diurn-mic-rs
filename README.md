@@ -6,14 +6,25 @@ registry. Publishes as the crate [`diurn-mic`](https://crates.io/crates/diurn-mi
 No async runtime, no HTTP client, no CLI framework — this crate reads a CSV and
 gives you typed records. Rendering and fetching are somebody else's job.
 
-```rust
-let outcome = MicRegistry::load_csv(reader, LoadOptions { published })?;
-let nyse = outcome.registry.get(mic!("XNYS"));
+```rust,no_run
+use diurn_mic::{LoadOptions, Mic, MicRegistry};
+use jiff::civil::date;
+
+let file = std::fs::File::open("ISO10383_MIC_2026-08-10.csv")?;
+let outcome = MicRegistry::load_csv(file, LoadOptions::new(date(2026, 8, 10)))?;
+
+let nyse = outcome.registry.get(Mic::new("XNYS")?).unwrap();
+println!("{} ({})", nyse.market_name, nyse.category.description().unwrap());
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 A malformed row never fails the load. Every problem the loader finds comes back
 as a structured `Issue` alongside the data, because ISO will eventually ship a
 bad record and that must degrade rather than break.
+
+The publication date is not a column in the file, so `LoadOptions` takes it. If
+you do not have it, `LoadOptions::infer()` recovers it from the data — see
+`publication_date_from_effective` for how, and for the limits.
 
 ## Data source and attribution
 

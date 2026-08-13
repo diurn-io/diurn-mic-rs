@@ -43,7 +43,7 @@ impl LoadOptions {
     /// the fingerprint the publication cycle leaves in the data: the latest
     /// `LAST UPDATE DATE`, when it is a fourth Monday, is an effective date,
     /// and the publication date is a fortnight earlier
-    /// ([`publication_date_from_effective`]).
+    /// ([`crate::publication_date_from_effective`]).
     ///
     /// Check [`MicRegistry::published_source`] afterwards to see which rule
     /// applied. Inference is best-effort and clock-free — it cannot tell a
