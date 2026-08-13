@@ -7,69 +7,96 @@ use crate::mic::ParseError;
 
 /// The ISO 10383 market category code.
 ///
+/// The sixteen named variants are the full registered list as published in the
+/// *ISO 10383 MIC Release 2.0 Factsheet*, and [`MarketCategory::description`]
+/// returns ISO's own wording for each.
+///
+/// Note that the registered list is wider than any one vintage uses: the
+/// 2026-08-10 file contains only 14 distinct codes, with `ARMS` and `CTPS`
+/// registered but unused. They are still named here, because a code appearing
+/// for the first time should not be reported as unrecognised.
+///
 /// # Why this is `non_exhaustive` and has an `Unknown` variant
 ///
-/// ISO revises the code list without warning, and the current file already
-/// proves it: the 2026-08-10 vintage contains 14 distinct codes, three of which
-/// (`CASP`, `TRFS`, `IDQS`) postdate most published references.
-///
-/// An unrecognised code is therefore an expected condition, not a corrupt file.
-/// It is preserved verbatim in [`MarketCategory::Unknown`] so that a consumer on
-/// an older version of this crate still round-trips the value, and the loader
-/// records [`crate::IssueKind::UnknownMarketCategory`] rather than failing.
+/// The list "can be updated upon request to the RA", so it grows without
+/// notice — `CASP`, `TRFS`, and `IDQS` all postdate most published references.
+/// An unrecognised code is an expected condition, not a corrupt file. It is
+/// preserved verbatim in [`MarketCategory::Unknown`] so a consumer on an older
+/// version of this crate still round-trips the value, and the loader records
+/// [`crate::IssueKind::UnknownMarketCategory`] rather than failing.
 #[non_exhaustive]
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum MarketCategory {
-    /// Regulated market.
+    /// Regulated Market.
     Rmkt,
-    /// Multilateral trading facility.
+    /// Multilateral Trading Facility.
     Mltf,
-    /// Organised trading facility.
+    /// Organised Trading Facility.
     Otfs,
-    /// Systematic internaliser.
+    /// Systematic Internaliser, as defined in MiFID II (Directive 2014/65/EU).
     Sint,
-    /// Alternative trading system.
+    /// Alternative Trading System.
     Atss,
-    /// Designated contract market.
+    /// Designated Contract Market.
     Dcms,
-    /// Swap execution facility.
+    /// Swap Execution Facility.
     Sefs,
-    /// Recognised market operator.
+    /// Recognised Market Operator.
     Rmos,
-    /// Approved publication arrangement.
+    /// Approved Publication Arrangement.
     Appa,
-    /// Not specified.
+    /// Approved Reporting Mechanism. Registered, but unused in the 2026-08-10
+    /// vintage.
+    Arms,
+    /// Consolidated Tape Provider. Registered, but unused in the 2026-08-10
+    /// vintage.
+    Ctps,
+    /// Not Specified. The most common category by a wide margin.
     Nspd,
     /// Other.
     Othr,
-    /// Crypto-asset service provider. A MiCA-era addition.
+    /// Crypto Asset Services Provider. A MiCA-era addition.
     Casp,
-    /// Trade reporting facility.
+    /// Trade Reporting Facility.
     Trfs,
-    /// Inter-dealer quotation system.
+    /// Inter-Dealer Quotation System.
     Idqs,
     /// A code this version of the crate does not know, preserved verbatim.
     Unknown([u8; 4]),
 }
 
 impl MarketCategory {
-    /// Every named variant, in the order they appear in [`MarketCategory`].
-    /// Excludes [`MarketCategory::Unknown`], which is not a fixed code.
-    pub const KNOWN: [MarketCategory; 14] = [
-        Self::Rmkt,
-        Self::Mltf,
-        Self::Otfs,
-        Self::Sint,
+    /// Every registered code, ordered as ISO publishes them — alphabetically by
+    /// description. Excludes [`MarketCategory::Unknown`], which is not a fixed
+    /// code.
+    ///
+    /// Useful for building a filter list or a lookup table:
+    ///
+    /// ```
+    /// use diurn_mic::MarketCategory;
+    /// let options: Vec<(&str, &str)> = MarketCategory::KNOWN
+    ///     .iter()
+    ///     .map(|c| (c.as_str(), c.description().unwrap()))
+    ///     .collect();
+    /// assert_eq!(options[0], ("ATSS", "Alternative Trading System"));
+    /// ```
+    pub const KNOWN: [MarketCategory; 16] = [
         Self::Atss,
-        Self::Dcms,
-        Self::Sefs,
-        Self::Rmos,
         Self::Appa,
-        Self::Nspd,
-        Self::Othr,
+        Self::Arms,
+        Self::Ctps,
         Self::Casp,
-        Self::Trfs,
+        Self::Dcms,
         Self::Idqs,
+        Self::Mltf,
+        Self::Nspd,
+        Self::Otfs,
+        Self::Othr,
+        Self::Rmos,
+        Self::Rmkt,
+        Self::Sefs,
+        Self::Sint,
+        Self::Trfs,
     ];
 
     pub fn new(s: &str) -> Result<Self, ParseError> {
@@ -100,6 +127,8 @@ impl MarketCategory {
             b"SEFS" => Self::Sefs,
             b"RMOS" => Self::Rmos,
             b"APPA" => Self::Appa,
+            b"ARMS" => Self::Arms,
+            b"CTPS" => Self::Ctps,
             b"NSPD" => Self::Nspd,
             b"OTHR" => Self::Othr,
             b"CASP" => Self::Casp,
@@ -122,6 +151,8 @@ impl MarketCategory {
             Self::Sefs => "SEFS",
             Self::Rmos => "RMOS",
             Self::Appa => "APPA",
+            Self::Arms => "ARMS",
+            Self::Ctps => "CTPS",
             Self::Nspd => "NSPD",
             Self::Othr => "OTHR",
             Self::Casp => "CASP",
@@ -131,6 +162,70 @@ impl MarketCategory {
                 std::str::from_utf8(code).expect("Unknown code is always valid ASCII")
             }
         }
+    }
+
+    /// ISO's own name for the category, for display and lookup.
+    ///
+    /// `None` for [`MarketCategory::Unknown`]: the code is preserved, but we
+    /// genuinely do not know what it means, and inventing an expansion — or
+    /// echoing the code back as though it were a name — would be worse than
+    /// saying so.
+    ///
+    /// ```
+    /// use diurn_mic::MarketCategory;
+    ///
+    /// let c = MarketCategory::new("SINT")?;
+    /// assert_eq!(c.description(), Some("Systematic Internaliser"));
+    ///
+    /// let future = MarketCategory::new("ZZZZ")?;
+    /// assert_eq!(future.as_str(), "ZZZZ");
+    /// assert_eq!(future.description(), None);
+    /// # Ok::<(), diurn_mic::ParseError>(())
+    /// ```
+    ///
+    /// Wording is taken verbatim from the *ISO 10383 MIC Release 2.0
+    /// Factsheet*, published by the Registration Authority.
+    pub fn description(&self) -> Option<&'static str> {
+        Some(match self {
+            Self::Atss => "Alternative Trading System",
+            Self::Appa => "Approved Publication Arrangement",
+            Self::Arms => "Approved Reporting Mechanism",
+            Self::Ctps => "Consolidated Tape Provider",
+            Self::Casp => "Crypto Asset Services Provider",
+            Self::Dcms => "Designated Contract Market",
+            Self::Idqs => "Inter-Dealer Quotation System",
+            Self::Mltf => "Multilateral Trading Facility",
+            Self::Nspd => "Not Specified",
+            Self::Otfs => "Organised Trading Facility",
+            Self::Othr => "Other",
+            Self::Rmos => "Recognised Market Operator",
+            Self::Rmkt => "Regulated Market",
+            Self::Sefs => "Swap Execution Facility",
+            Self::Sint => "Systematic Internaliser",
+            Self::Trfs => "Trade Reporting Facility",
+            Self::Unknown(_) => return None,
+        })
+    }
+
+    /// Look a category up by its ISO description, ignoring case.
+    ///
+    /// The inverse of [`MarketCategory::description`], for parsing a filter
+    /// value or a query parameter that carries the readable name.
+    ///
+    /// ```
+    /// use diurn_mic::MarketCategory;
+    /// assert_eq!(
+    ///     MarketCategory::from_description("regulated market"),
+    ///     Some(MarketCategory::Rmkt)
+    /// );
+    /// assert_eq!(MarketCategory::from_description("Nonsense"), None);
+    /// ```
+    pub fn from_description(name: &str) -> Option<Self> {
+        let name = name.trim();
+        Self::KNOWN.into_iter().find(|c| {
+            c.description()
+                .is_some_and(|d| d.eq_ignore_ascii_case(name))
+        })
     }
 
     pub fn is_known(&self) -> bool {
@@ -206,6 +301,88 @@ mod tests {
             assert!(c.is_known());
             assert_eq!(MarketCategory::new(c.as_str()).unwrap(), c);
         }
+    }
+
+    /// Registered by ISO but absent from the 2026-08-10 vintage. Naming them is
+    /// the whole point: the first file that carries one must not report it as
+    /// unrecognised.
+    #[test]
+    fn registered_but_unused_codes_are_known() {
+        for (code, desc) in [
+            ("ARMS", "Approved Reporting Mechanism"),
+            ("CTPS", "Consolidated Tape Provider"),
+        ] {
+            let c = MarketCategory::new(code).unwrap();
+            assert!(c.is_known(), "{code} should be a named variant");
+            assert_eq!(c.description(), Some(desc));
+        }
+    }
+
+    #[test]
+    fn every_known_code_has_a_description() {
+        for c in MarketCategory::KNOWN {
+            let d = c.description().unwrap_or_else(|| {
+                panic!("{} has no description", c.as_str());
+            });
+            assert!(!d.is_empty());
+            // ISO writes these in title case; a lowercase word would mean
+            // someone paraphrased rather than quoted.
+            assert!(
+                d.chars().next().unwrap().is_uppercase(),
+                "{d:?} is not ISO's wording"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_has_no_description() {
+        let c = MarketCategory::new("ZZZZ").unwrap();
+        assert_eq!(c.description(), None);
+        // ...but the code itself is still available.
+        assert_eq!(c.as_str(), "ZZZZ");
+    }
+
+    #[test]
+    fn descriptions_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for c in MarketCategory::KNOWN {
+            assert!(
+                seen.insert(c.description().unwrap()),
+                "duplicate description on {}",
+                c.as_str()
+            );
+        }
+        assert_eq!(seen.len(), 16);
+    }
+
+    #[test]
+    fn description_lookup_round_trips() {
+        for c in MarketCategory::KNOWN {
+            let d = c.description().unwrap();
+            assert_eq!(MarketCategory::from_description(d), Some(c));
+            assert_eq!(MarketCategory::from_description(&d.to_lowercase()), Some(c));
+            assert_eq!(
+                MarketCategory::from_description(&format!("  {d} ")),
+                Some(c)
+            );
+        }
+        assert_eq!(MarketCategory::from_description("Not A Category"), None);
+        assert_eq!(MarketCategory::from_description(""), None);
+    }
+
+    /// The named list is wider than any one vintage. Guards against someone
+    /// "tidying up" by deleting the two unused codes.
+    #[test]
+    fn all_sixteen_registered_codes_are_named() {
+        let codes: std::collections::HashSet<_> =
+            MarketCategory::KNOWN.iter().map(|c| c.as_str()).collect();
+        for code in [
+            "ATSS", "APPA", "ARMS", "CTPS", "CASP", "DCMS", "IDQS", "MLTF", "NSPD", "OTFS", "OTHR",
+            "RMOS", "RMKT", "SEFS", "SINT", "TRFS",
+        ] {
+            assert!(codes.contains(code), "{code} is missing from KNOWN");
+        }
+        assert_eq!(codes.len(), 16);
     }
 
     #[test]

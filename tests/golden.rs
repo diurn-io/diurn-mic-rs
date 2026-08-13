@@ -172,13 +172,47 @@ fn recent_market_categories_parse_as_known() {
         .collect();
     assert!(unknown.is_empty(), "unrecognised categories: {unknown:?}");
 
+    let present: std::collections::HashSet<_> = out.registry.iter().map(|r| r.category).collect();
+    assert_eq!(present.len(), 14);
+
+    // ISO registers 16 codes; this vintage uses 14. ARMS and CTPS are named
+    // variants precisely because they are absent here — the first file that
+    // carries one must parse it, not report it as unrecognised.
+    assert_eq!(MarketCategory::KNOWN.len(), 16);
+    assert!(!present.contains(&MarketCategory::Arms));
+    assert!(!present.contains(&MarketCategory::Ctps));
+}
+
+/// Every category in the file resolves to ISO's own wording, which is what the
+/// CLI and the per-MIC pages render.
+#[test]
+fn every_category_in_the_file_has_a_description() {
+    let out = load();
+    for rec in out.registry.iter() {
+        assert!(
+            rec.category.description().is_some(),
+            "{} has category {} with no description",
+            rec.mic,
+            rec.category
+        );
+    }
+
+    let category_of = |m: &str| out.registry.get(Mic::new(m).unwrap()).unwrap().category;
+
+    // Worth pinning because it is counterintuitive: the NYSE is categorised
+    // NSPD while Nasdaq is RMKT. Category is self-reported to the RA and is not
+    // a reliable signal of what a venue actually is — do not build calendar
+    // logic on it.
+    assert_eq!(category_of("XNYS").description(), Some("Not Specified"));
+    assert_eq!(category_of("XNAS").description(), Some("Regulated Market"));
+
     assert_eq!(
-        out.registry
-            .iter()
-            .map(|r| r.category)
-            .collect::<std::collections::HashSet<_>>()
-            .len(),
-        14
+        category_of("OTCI").description(),
+        Some("Inter-Dealer Quotation System")
+    );
+    assert_eq!(
+        category_of("FINN").description(),
+        Some("Trade Reporting Facility")
     );
 }
 
