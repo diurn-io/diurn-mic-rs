@@ -1,0 +1,33 @@
+[package]
+name = "diurn-mic"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT OR Apache-2.0"
+description = "Parser, model, registry, and diff for the ISO 10383 Market Identifier Code registry"
+repository = "https://github.com/diurn-io/diurn-mic-rs"
+homepage = "https://diurn.io"
+documentation = "https://docs.rs/diurn-mic"
+readme = "README.md"
+keywords = ["mic", "iso10383", "exchange", "finance", "market"]
+categories = ["parser-implementations", "finance", "data-structures"]
+# The pinned ISO vintage is a test fixture, not part of the published artifact.
+exclude = ["tests/fixtures/*.csv"]
+
+[dependencies]
+csv = "1.4"
+encoding_rs = "0.8"
+# No tzdb: this crate only deals in civil dates. diurn-cal is where zones matter.
+jiff = { version = "0.2", default-features = false, features = ["std", "alloc", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2.0"
+
+[dev-dependencies]
+proptest = "1.11"
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
