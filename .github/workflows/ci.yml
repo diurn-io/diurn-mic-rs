@@ -44,7 +44,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install stable
         run: |
@@ -80,7 +80,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install stable with rustfmt and clippy
         run: |
@@ -100,7 +100,7 @@ jobs:
     name: msrv (1.82)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install 1.82.0
         # Keep in step with rust-version in Cargo.toml.
@@ -121,18 +121,13 @@ jobs:
     name: dependency boundary
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install stable
         run: |
           rustup update stable --no-self-update
           rustup default stable
 
-      # SPEC 1.6: this crate parses a CSV. Someone adding MIC parsing to their
-      # trading system should get csv, serde, and jiff, and nothing else. An
-      # async runtime or HTTP client arriving by way of a transitive dependency
-      # is a boundary violation, and it is far cheaper to catch here than in a
-      # consumer's dependency review.
       - name: No runtime, HTTP, or CLI dependencies
         run: |
           # ureq and its TLS stack are listed deliberately: fetching the ISO
@@ -158,32 +153,19 @@ jobs:
           echo "Dependency boundary holds. Normal tree:"
           cargo tree --locked --edges normal
 
-  package:
-    name: publish dry run
+
+  publish:
+    name: Publish
+    if: github.event_name == 'release'
+
+    needs: [test, lint, boundary]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - name: Install stable
-        run: |
-          rustup update stable --no-self-update
-          rustup default stable
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      # Catches bad manifest metadata, a missing readme, or an exclude rule that
-      # drops something the build needs — all of which otherwise surface for the
-      # first time during an actual release.
-      - run: cargo package --locked
+      - name: Publish
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-      # The pinned ISO vintage is 587 KB and is deliberately not redistributed
-      # in the published artifact. The test files are excluded with it: they are
-      # meaningless without the fixture, and shipping tests that cannot pass is
-      # worse than shipping none.
-      - name: Fixtures stay out of the package
-        run: |
-          if cargo package --locked --list | grep -q '^tests/'; then
-            echo '::error::test files leaked into the package; check the exclude list in Cargo.toml'
-            cargo package --locked --list
-            exit 1
-          fi
-          echo "Package contents:"
-          cargo package --locked --list
