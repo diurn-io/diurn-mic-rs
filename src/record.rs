@@ -8,20 +8,52 @@ use crate::{CountryCode, Lei, MarketCategory, Mic, OperatingMic};
 
 /// Whether a record describes an operating exchange or one of its segments.
 ///
-/// Corresponds to the `OPRT/SGMT` column. Note that this says nothing about
-/// which market calendar applies — segment status and parentage are orthogonal
-/// to trading hours.
+/// The `OPRT/SGMT` column, which ISO also calls the *MIC Type*.
+///
+/// Note that this says nothing about which market calendar applies — segment
+/// status and parentage are orthogonal to trading hours. `XTKS` is a segment
+/// and `XNYS` is an operating MIC, and both keep an ordinary equity calendar.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum MicKind {
+    /// An "entity operating an exchange/market/trade reporting facility in a
+    /// specific market/country" (ISO 10383 RA).
     Operating,
+    /// A "section of an exchange/market/trade reporting facility that
+    /// specialises in one or more specific instruments or that is regulated
+    /// differently" (ISO 10383 RA).
     Segment,
 }
 
 impl MicKind {
+    pub const KNOWN: [MicKind; 2] = [Self::Operating, Self::Segment];
+
+    /// The four-letter code as it appears in the file.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Operating => "OPRT",
             Self::Segment => "SGMT",
+        }
+    }
+
+    /// ISO's expansion of the code, for display.
+    ///
+    /// Unlike [`crate::MarketCategory::description`] this returns a plain
+    /// `&str` rather than an `Option`: the column is a closed two-value
+    /// enumeration with no room for ISO to add a third, so there is no unknown
+    /// case to represent.
+    ///
+    /// ```
+    /// use diurn_mic::MicKind;
+    /// assert_eq!(MicKind::Operating.as_str(), "OPRT");
+    /// assert_eq!(MicKind::Operating.description(), "Operating");
+    /// ```
+    ///
+    /// Wording is ISO's own — the factsheet writes "OPRT (Operating) or SGMT
+    /// (Segment)".
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Operating => "Operating",
+            Self::Segment => "Segment",
         }
     }
 }
@@ -143,6 +175,55 @@ impl MicRecord {
         match self.last_updated {
             Some(effective) => effective <= date,
             None => true,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mic_kind_round_trips_through_its_code() {
+        for k in MicKind::KNOWN {
+            assert_eq!(k.as_str().parse::<MicKind>().unwrap(), k);
+        }
+    }
+
+    #[test]
+    fn mic_kind_descriptions_are_isos_wording() {
+        assert_eq!(MicKind::Operating.as_str(), "OPRT");
+        assert_eq!(MicKind::Operating.description(), "Operating");
+        assert_eq!(MicKind::Segment.as_str(), "SGMT");
+        assert_eq!(MicKind::Segment.description(), "Segment");
+    }
+
+    /// The code and its expansion must never be confused for one another.
+    #[test]
+    fn code_and_description_are_distinct() {
+        for k in MicKind::KNOWN {
+            assert_ne!(k.as_str(), k.description());
+            assert_eq!(k.as_str().len(), 4);
+        }
+    }
+
+    #[test]
+    fn mic_kind_parsing_is_lenient_about_case_and_padding() {
+        assert_eq!("oprt".parse::<MicKind>().unwrap(), MicKind::Operating);
+        assert_eq!("  SGMT ".parse::<MicKind>().unwrap(), MicKind::Segment);
+        assert!("OPERATING".parse::<MicKind>().is_err());
+        assert!("".parse::<MicKind>().is_err());
+    }
+
+    #[test]
+    fn status_round_trips_through_its_code() {
+        for (s, code) in [
+            (Status::Active, "ACTIVE"),
+            (Status::Updated, "UPDATED"),
+            (Status::Expired, "EXPIRED"),
+        ] {
+            assert_eq!(s.as_str(), code);
+            assert_eq!(code.parse::<Status>().unwrap(), s);
         }
     }
 }

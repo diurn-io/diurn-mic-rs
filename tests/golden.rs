@@ -10,8 +10,8 @@
 use std::fs::File;
 
 use diurn_mic::{
-    diff, validate, CountryCode, IssueKind, LoadOptions, MarketCategory, Mic, MicRegistry,
-    OperatingMic, Severity, Status,
+    diff, publication_date_from_effective, validate, CountryCode, IssueKind, LoadOptions,
+    MarketCategory, Mic, MicRegistry, OperatingMic, PublishedSource, Severity, Status,
 };
 use jiff::civil::{date, Date};
 
@@ -392,5 +392,38 @@ fn self_diff_is_empty() {
 
 #[test]
 fn published_date_round_trips() {
-    assert_eq!(load().registry.published(), PUBLISHED);
+    let out = load();
+    assert_eq!(out.registry.published(), PUBLISHED);
+    assert_eq!(out.registry.published_source(), PublishedSource::Given);
+}
+
+/// The publication date is recoverable from the file alone. This is what lets
+/// `diurn mic fetch` name a download correctly without scraping the ISO page,
+/// and it is checked against the real vintage rather than a synthetic one.
+#[test]
+fn publication_date_is_recoverable_from_the_file() {
+    let f = File::open(FIXTURE).expect("pinned fixture is missing");
+    let out = MicRegistry::load_csv(f, LoadOptions::infer()).expect("must load");
+
+    assert_eq!(
+        out.registry.published_source(),
+        PublishedSource::InferredFromEffectiveDate
+    );
+    // Derived with no clock, no network, and no knowledge of the filename —
+    // and it agrees with the date ISO publishes on its own website.
+    assert_eq!(out.registry.published(), PUBLISHED);
+
+    // Everything downstream of the date then lands identically.
+    assert_eq!(out.registry.pending().count(), 35);
+    assert_eq!(out.registry.as_of(date(2026, 8, 23)).count(), 2875 - 35);
+}
+
+/// The arithmetic, stated directly against this vintage's numbers.
+#[test]
+fn fourth_monday_implies_the_second() {
+    assert_eq!(publication_date_from_effective(EFFECTIVE), Some(PUBLISHED));
+    // The maximum last_updated in the file is exactly that effective date.
+    let out = load();
+    let max = out.registry.iter().filter_map(|r| r.last_updated).max();
+    assert_eq!(max, Some(EFFECTIVE));
 }

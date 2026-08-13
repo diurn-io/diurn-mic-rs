@@ -4,26 +4,56 @@ use jiff::civil::Date;
 use serde::Deserialize;
 
 use crate::issue::{Issue, IssueKind};
+use crate::published::PublishedSource;
 use crate::record::{MicKind, MicRecord, Status};
 use crate::registry::MicRegistry;
 use crate::{CountryCode, Lei, MarketCategory, Mic, OperatingMic};
 
 /// Inputs the CSV cannot supply for itself.
+///
+/// Only one: the publication date, which is not a field in the file. See
+/// [`LoadOptions::new`] and [`LoadOptions::infer`].
 #[derive(Clone, Debug)]
 pub struct LoadOptions {
-    /// Publication date of this vintage.
-    ///
-    /// **Not present in the file**, and not derivable from it: the ISO download
-    /// URL is unversioned, so two downloads a month apart are indistinguishable
-    /// on disk. Supply it from the filename or from wherever you recorded it.
-    ///
-    /// ISO publishes on the second Monday of each month.
-    pub published: Date,
+    published: Requested,
+}
+
+#[derive(Copy, Clone, Debug)]
+enum Requested {
+    Known(Date),
+    Infer,
 }
 
 impl LoadOptions {
+    /// Use a known publication date.
+    ///
+    /// Prefer this whenever you have it — from the pinned filename, a
+    /// changelog, or whatever recorded the download. ISO publishes on the
+    /// second Monday of each month.
     pub fn new(published: Date) -> Self {
-        Self { published }
+        Self {
+            published: Requested::Known(published),
+        }
+    }
+
+    /// Recover the publication date from the file's own contents.
+    ///
+    /// The ISO download URL is unversioned, so a file that arrived without a
+    /// recorded date cannot otherwise say which vintage it is. Inference reads
+    /// the fingerprint the publication cycle leaves in the data: the latest
+    /// `LAST UPDATE DATE`, when it is a fourth Monday, is an effective date,
+    /// and the publication date is a fortnight earlier
+    /// ([`publication_date_from_effective`]).
+    ///
+    /// Check [`MicRegistry::published_source`] afterwards to see which rule
+    /// applied. Inference is best-effort and clock-free — it cannot tell a
+    /// current effective date from a stale one left over from an earlier cycle,
+    /// because that distinction requires knowing today's date. A caller that
+    /// has a clock should sanity-check the result against it.
+    pub fn infer() -> Self {
+        Self {
+            published: Requested::Infer,
+        }
     }
 }
 
@@ -155,12 +185,12 @@ impl MicRecord {
     ///
     /// Returns `None` only when the row cannot be keyed — an unparseable MIC.
     /// Every other problem produces an issue and a usable record.
-    fn from_raw(
-        raw: RawMicRecord,
-        line: Option<u64>,
-        issues: &mut Vec<Issue>,
-        published: Date,
-    ) -> Option<Self> {
+    ///
+    /// Deliberately knows nothing about the publication date: checks that
+    /// depend on it are whole-file properties and run in
+    /// [`MicRegistry::from_records`], because the date may itself be derived
+    /// from the rows (see [`LoadOptions::infer`]) and so is not known yet.
+    fn from_raw(raw: RawMicRecord, line: Option<u64>, issues: &mut Vec<Issue>) -> Option<Self> {
         let mic_raw = clean(raw.mic);
         let mic = match mic_raw.as_deref().map(Mic::new) {
             Some(Ok(m)) => m,
@@ -187,15 +217,28 @@ impl MicRecord {
             .map(OperatingMic::new)
             .unwrap_or_else(|| OperatingMic::new(mic));
 
-        let kind = clean(raw.kind)
-            .as_deref()
-            .and_then(|s| s.parse::<MicKind>().ok())
-            // Absent OPRT/SGMT: infer from whether the record is its own parent.
-            .unwrap_or(if operating_mic.mic() == mic {
+        // Absent or unreadable OPRT/SGMT: infer from whether the record is its
+        // own parent, which is what the column means in a well-formed file.
+        // Absent is silent; present-but-unrecognised is reported, matching how
+        // status and category are handled.
+        let infer_kind = || {
+            if operating_mic.mic() == mic {
                 MicKind::Operating
             } else {
                 MicKind::Segment
-            });
+            }
+        };
+        let kind = match clean(raw.kind) {
+            Some(k) => k.parse::<MicKind>().unwrap_or_else(|_| {
+                issues.push(Issue::new(
+                    line,
+                    Some(mic),
+                    IssueKind::UnknownMicKind { value: k.clone() },
+                ));
+                infer_kind()
+            }),
+            None => infer_kind(),
+        };
 
         let status = match clean(raw.status) {
             Some(s) => s.parse::<Status>().unwrap_or_else(|_| {
@@ -268,31 +311,6 @@ impl MicRecord {
         );
         let expires = parse_date(raw.expires.as_deref(), "expires", line, Some(mic), issues);
 
-        // Pending change: published, but not in force until `effective`.
-        if let Some(effective) = last_updated {
-            if effective > published {
-                issues.push(Issue::new(
-                    line,
-                    Some(mic),
-                    IssueKind::FutureDatedRecord { effective },
-                ));
-            }
-        }
-
-        match (status, expires) {
-            (Status::Expired, None) => issues.push(Issue::new(
-                line,
-                Some(mic),
-                IssueKind::ExpiredWithoutExpiryDate,
-            )),
-            (Status::Active, Some(e)) if e < published => issues.push(Issue::new(
-                line,
-                Some(mic),
-                IssueKind::ActiveWithPastExpiryDate { expires: e },
-            )),
-            _ => {}
-        }
-
         Some(MicRecord {
             mic,
             operating_mic,
@@ -341,8 +359,8 @@ impl MicRegistry {
     /// Fails only if the source cannot be read or has no usable CSV structure.
     /// Individual bad records produce [`Issue`]s and, at worst, are skipped.
     ///
-    /// `opts.published` is required because the file does not carry its own
-    /// publication date; see [`LoadOptions`].
+    /// The publication date comes from `opts`, because the file does not carry
+    /// one; see [`LoadOptions::new`] and [`LoadOptions::infer`].
     pub fn load_csv(mut reader: impl Read, opts: LoadOptions) -> Result<LoadOutcome, LoadError> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes)?;
@@ -372,7 +390,7 @@ impl MicRegistry {
             let line = Some(records.len() as u64 + 2);
             match result {
                 Ok(raw) => {
-                    if let Some(rec) = MicRecord::from_raw(raw, line, &mut issues, opts.published) {
+                    if let Some(rec) = MicRecord::from_raw(raw, line, &mut issues) {
                         records.push(rec);
                     }
                 }
@@ -388,7 +406,17 @@ impl MicRegistry {
             }
         }
 
-        let registry = MicRegistry::from_records(records, opts.published, &mut issues);
+        // The publication date may itself be derived from the rows, so it can
+        // only be settled once they are all parsed.
+        let (published, source) = match opts.published {
+            Requested::Known(d) => (d, PublishedSource::Given),
+            Requested::Infer => {
+                let latest = records.iter().filter_map(|r| r.last_updated).max();
+                crate::published::infer(latest)
+            }
+        };
+
+        let registry = MicRegistry::from_records(records, published, source, &mut issues);
         Ok(LoadOutcome { registry, issues })
     }
 }
@@ -535,6 +563,75 @@ mod tests {
     }
 
     #[test]
+    fn infers_publication_date_from_a_pending_record() {
+        let csv = format!(
+            "{HEADER}\n\
+             \"XAAA\",\"XAAA\",\"OPRT\",\"SETTLED\",,,\"RMKT\",,\"US\",\"NY\",,\"ACTIVE\",,\"20200101\",,,\n\
+             \"XBBB\",\"XBBB\",\"OPRT\",\"PENDING\",,,\"RMKT\",,\"US\",\"NY\",,\"UPDATED\",,\"20260824\",,,\n"
+        );
+        let out = MicRegistry::load_csv(csv.as_bytes(), LoadOptions::infer()).unwrap();
+
+        // Fourth Monday 2026-08-24 implies second Monday 2026-08-10.
+        assert_eq!(out.registry.published(), date(2026, 8, 10));
+        assert_eq!(
+            out.registry.published_source(),
+            crate::PublishedSource::InferredFromEffectiveDate
+        );
+        // ...and the pending record is then correctly identified as pending.
+        assert!(out.registry.is_pending(Mic::new("XBBB").unwrap()));
+        assert!(!out.registry.is_pending(Mic::new("XAAA").unwrap()));
+    }
+
+    /// No recognisable effective date: fall back to the latest date seen, which
+    /// makes nothing pending. Under-claiming beats inventing.
+    #[test]
+    fn falls_back_when_no_effective_date_is_present() {
+        // The latest date here is a Tuesday, so it cannot be an effective date.
+        // (2026-06-22 would be a poor choice: it is June's fourth Monday.)
+        let csv = format!(
+            "{HEADER}\n\
+             \"XAAA\",\"XAAA\",\"OPRT\",\"A\",,,\"RMKT\",,\"US\",\"NY\",,\"ACTIVE\",,\"20260609\",,,\n\
+             \"XBBB\",\"XBBB\",\"OPRT\",\"B\",,,\"RMKT\",,\"US\",\"NY\",,\"ACTIVE\",,\"20260616\",,,\n"
+        );
+        let out = MicRegistry::load_csv(csv.as_bytes(), LoadOptions::infer()).unwrap();
+
+        assert_eq!(out.registry.published(), date(2026, 6, 16));
+        assert_eq!(
+            out.registry.published_source(),
+            crate::PublishedSource::LatestUpdateInFile
+        );
+        assert_eq!(out.registry.pending().count(), 0);
+    }
+
+    /// A supplied date always wins, even when the file would suggest otherwise.
+    #[test]
+    fn given_date_overrides_what_the_file_implies() {
+        let csv = format!(
+            "{HEADER}\n\"XBBB\",\"XBBB\",\"OPRT\",\"PENDING\",,,\"RMKT\",,\"US\",\"NY\",,\"UPDATED\",,\"20260824\",,,\n"
+        );
+        let out =
+            MicRegistry::load_csv(csv.as_bytes(), LoadOptions::new(date(2026, 9, 14))).unwrap();
+
+        assert_eq!(out.registry.published(), date(2026, 9, 14));
+        assert_eq!(
+            out.registry.published_source(),
+            crate::PublishedSource::Given
+        );
+        // Relative to September, the August effective date is already in force.
+        assert!(!out.registry.is_pending(Mic::new("XBBB").unwrap()));
+    }
+
+    #[test]
+    fn inference_on_an_empty_file_does_not_panic() {
+        let out = MicRegistry::load_csv(HEADER.as_bytes(), LoadOptions::infer()).unwrap();
+        assert!(out.registry.is_empty());
+        assert_eq!(
+            out.registry.published_source(),
+            crate::PublishedSource::LatestUpdateInFile
+        );
+    }
+
+    #[test]
     fn wrong_file_is_rejected_outright() {
         let err = MicRegistry::load_csv(
             "name,value\nfoo,1\n".as_bytes(),
@@ -542,6 +639,56 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, LoadError::MissingColumn("MIC")));
+    }
+
+    /// An unreadable OPRT/SGMT is reported, not swallowed — matching how an
+    /// unknown status or category behaves. The kind is then inferred from
+    /// parentage.
+    #[test]
+    fn unknown_mic_kind_is_warned_and_inferred() {
+        let csv = format!(
+            "{HEADER}\n\
+             \"XAAA\",\"XAAA\",\"WHAT\",\"OWN PARENT\",,,\"RMKT\",,\"US\",\"NY\",,\"ACTIVE\",,,,,\n\
+             \"XBBB\",\"XAAA\",\"WHAT\",\"CHILD OF XAAA\",,,\"RMKT\",,\"US\",\"NY\",,\"ACTIVE\",,,,,\n"
+        );
+        let out = load(&csv);
+
+        assert_eq!(
+            out.registry.get(Mic::new("XAAA").unwrap()).unwrap().kind,
+            crate::MicKind::Operating
+        );
+        assert_eq!(
+            out.registry.get(Mic::new("XBBB").unwrap()).unwrap().kind,
+            crate::MicKind::Segment
+        );
+
+        let warned: Vec<_> = out
+            .issues
+            .iter()
+            .filter(|i| matches!(i.kind, IssueKind::UnknownMicKind { .. }))
+            .collect();
+        assert_eq!(warned.len(), 2);
+        assert!(warned
+            .iter()
+            .all(|i| i.severity == crate::Severity::Warning));
+        assert!(!out.has_errors());
+    }
+
+    /// An *absent* OPRT/SGMT is inferred silently — there is nothing to report.
+    #[test]
+    fn absent_mic_kind_is_inferred_without_an_issue() {
+        let csv = format!(
+            "{HEADER}\n\"XAAA\",\"XAAA\",,\"NO KIND COLUMN VALUE\",,,\"RMKT\",,\"US\",\"NY\",,\"ACTIVE\",,,,,\n"
+        );
+        let out = load(&csv);
+        assert_eq!(
+            out.registry.get(Mic::new("XAAA").unwrap()).unwrap().kind,
+            crate::MicKind::Operating
+        );
+        assert!(!out
+            .issues
+            .iter()
+            .any(|i| matches!(i.kind, IssueKind::UnknownMicKind { .. })));
     }
 
     #[test]

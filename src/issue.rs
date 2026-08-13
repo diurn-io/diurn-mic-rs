@@ -40,6 +40,9 @@ pub enum IssueKind {
     UnknownMarketCategory { value: Box<str> },
     /// A status outside `ACTIVE` / `UPDATED` / `EXPIRED`.
     UnknownStatus { value: Box<str> },
+    /// An `OPRT/SGMT` value that is neither. The kind is inferred from whether
+    /// the record is its own parent.
+    UnknownMicKind { value: Box<str> },
     /// A date field that is neither empty nor a valid `YYYYMMDD`.
     MalformedDate {
         field: &'static str,
@@ -84,6 +87,7 @@ impl IssueKind {
             Self::InvalidLeiChecksum { .. }
             | Self::UnknownMarketCategory { .. }
             | Self::UnknownStatus { .. }
+            | Self::UnknownMicKind { .. }
             | Self::MalformedDate { .. }
             | Self::EncodingFallback
             | Self::DanglingOperatingMic { .. }
@@ -115,6 +119,9 @@ impl fmt::Display for IssueKind {
                 write!(f, "unrecognised market category: {value}")
             }
             Self::UnknownStatus { value } => write!(f, "unrecognised status: {value:?}"),
+            Self::UnknownMicKind { value } => {
+                write!(f, "unrecognised MIC type: {value:?}")
+            }
             Self::MalformedDate { field, value } => {
                 write!(f, "malformed date in {field}: {value:?}")
             }

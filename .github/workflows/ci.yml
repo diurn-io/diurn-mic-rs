@@ -135,7 +135,12 @@ jobs:
       # consumer's dependency review.
       - name: No runtime, HTTP, or CLI dependencies
         run: |
-          forbidden="clap tokio reqwest hyper async-std smol axum openssl native-tls"
+          # ureq and its TLS stack are listed deliberately: fetching the ISO
+          # file is the CLI's job, not this crate's. See SPEC 2.1 — it is not
+          # only about weight, it is that fetching forces a publication-date
+          # decision a parser must not make.
+          forbidden="clap tokio reqwest ureq hyper async-std smol axum \
+                     openssl native-tls rustls ring"
           # --edges normal excludes dev-dependencies: proptest is fine.
           names=$(cargo tree --locked --edges normal --prefix none | awk '{print $1}' | sort -u)
           failed=0

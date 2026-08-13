@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use jiff::civil::Date;
 
 use crate::issue::{Issue, IssueKind};
-use crate::record::{MicKind, MicRecord};
+use crate::published::PublishedSource;
+use crate::record::{MicKind, MicRecord, Status};
 use crate::{CountryCode, Mic, OperatingMic};
 
 /// An immutable, in-memory index over one vintage of the ISO 10383 registry.
@@ -20,6 +21,7 @@ pub struct MicRegistry {
     segments_by_operating: HashMap<OperatingMic, Vec<u32>>,
     by_country: HashMap<CountryCode, Vec<u32>>,
     published: Date,
+    published_source: PublishedSource,
 }
 
 impl MicRegistry {
@@ -30,6 +32,7 @@ impl MicRegistry {
     pub(crate) fn from_records(
         records: Vec<MicRecord>,
         published: Date,
+        published_source: PublishedSource,
         issues: &mut Vec<Issue>,
     ) -> Self {
         let mut by_mic: HashMap<Mic, u32> = HashMap::with_capacity(records.len());
@@ -105,12 +108,42 @@ impl MicRegistry {
             }
         }
 
+        // Checks that need the publication date. These run here rather than
+        // per-row because the date may have been derived from the rows
+        // themselves and so was not known while they were being parsed.
+        for rec in &kept {
+            if let Some(effective) = rec.last_updated {
+                if effective > published {
+                    issues.push(Issue::new(
+                        None,
+                        Some(rec.mic),
+                        IssueKind::FutureDatedRecord { effective },
+                    ));
+                }
+            }
+
+            match (rec.status, rec.expires) {
+                (Status::Expired, None) => issues.push(Issue::new(
+                    None,
+                    Some(rec.mic),
+                    IssueKind::ExpiredWithoutExpiryDate,
+                )),
+                (Status::Active, Some(e)) if e < published => issues.push(Issue::new(
+                    None,
+                    Some(rec.mic),
+                    IssueKind::ActiveWithPastExpiryDate { expires: e },
+                )),
+                _ => {}
+            }
+        }
+
         Self {
             records: kept,
             by_mic,
             segments_by_operating,
             by_country,
             published,
+            published_source,
         }
     }
 
@@ -152,9 +185,22 @@ impl MicRegistry {
         self.records.iter()
     }
 
-    /// Publication date of this vintage, as supplied at load time.
+    /// Publication date of this vintage.
+    ///
+    /// Either supplied at load time or derived from the file; check
+    /// [`MicRegistry::published_source`] to know which.
     pub fn published(&self) -> Date {
         self.published
+    }
+
+    /// How [`MicRegistry::published`] was arrived at.
+    ///
+    /// A caller that inferred the date and has a clock available should
+    /// sanity-check the result — inference is clock-free and cannot tell a
+    /// current effective date from a stale one (see
+    /// [`crate::publication_date_from_effective`]).
+    pub fn published_source(&self) -> PublishedSource {
+        self.published_source
     }
 
     pub fn len(&self) -> usize {
