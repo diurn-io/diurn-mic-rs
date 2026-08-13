@@ -1,0 +1,184 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch supersedes the run in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# actions/checkout is the only action used anywhere in this file, and it is
+# GitHub's own. Toolchains come from the rustup that is preinstalled on every
+# runner; there is no third-party action in the supply chain for this repo.
+#
+# There is deliberately no build cache. A cold build of this crate is about six
+# seconds for the library and sixteen with the dev-dependency tree, which is the
+# same order as restoring and re-uploading a cache — so caching would buy
+# nothing and cost a dependency plus a class of stale-cache failures.
+
+defaults:
+  run:
+    # Windows runners default to pwsh. One shell everywhere means one version of
+    # each script below rather than two.
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  # Cargo caps lints for registry dependencies, so this only escalates warnings
+  # in our own code.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc --version && cargo --version
+
+      # The golden suite asserts exact counts against the pinned vintage, so a
+      # fixture mangled on checkout would fail anyway — but as a count mismatch
+      # thirty tests deep. Checking the hash up front turns that into one clear
+      # error.
+      - name: Verify the pinned fixture is intact
+        run: |
+          expected=414fc527bcc99f4d9f5da099cd4ea8e5ee14bd791dda3ea135f1621ee6d256e0
+          file=tests/fixtures/ISO10383_MIC_2026-08-10.csv
+          # sha256sum on Linux and Git Bash; macOS ships shasum instead.
+          if command -v sha256sum >/dev/null; then
+            actual=$(sha256sum "$file" | cut -d' ' -f1)
+          else
+            actual=$(shasum -a 256 "$file" | cut -d' ' -f1)
+          fi
+          if [ "$actual" != "$expected" ]; then
+            echo "::error file=$file::pinned vintage has changed (got $actual)"
+            echo "If this was intentional, update the hash here and the counts in tests/golden.rs."
+            exit 1
+          fi
+          echo "fixture matches $expected"
+
+      - run: cargo test --locked --all-targets
+      # --all-targets skips doctests; the documented examples matter too.
+      - run: cargo test --locked --doc
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable with rustfmt and clippy
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add rustfmt clippy
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: rustdoc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps
+
+  msrv:
+    name: msrv (1.82)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install 1.82.0
+        # Keep in step with rust-version in Cargo.toml.
+        run: |
+          rustup toolchain install 1.82.0 --profile minimal --no-self-update
+          rustc +1.82.0 --version
+
+      # Library only, deliberately: no --all-targets.
+      #
+      # rust-version is a promise to consumers about building this crate, and
+      # the normal dependency tree honours it. The dev tree does not — proptest
+      # pulls rand and then getrandom, which needs edition 2024 and so Rust
+      # 1.85. Raising our MSRV to satisfy a test-only dependency would restrict
+      # every consumer for something none of them compile.
+      - run: cargo +1.82.0 check --locked
+
+  boundary:
+    name: dependency boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+
+      # SPEC 1.6: this crate parses a CSV. Someone adding MIC parsing to their
+      # trading system should get csv, serde, and jiff, and nothing else. An
+      # async runtime or HTTP client arriving by way of a transitive dependency
+      # is a boundary violation, and it is far cheaper to catch here than in a
+      # consumer's dependency review.
+      - name: No runtime, HTTP, or CLI dependencies
+        run: |
+          forbidden="clap tokio reqwest hyper async-std smol axum openssl native-tls"
+          # --edges normal excludes dev-dependencies: proptest is fine.
+          names=$(cargo tree --locked --edges normal --prefix none | awk '{print $1}' | sort -u)
+          failed=0
+          for crate in $forbidden; do
+            if printf '%s\n' "$names" | grep -qx "$crate"; then
+              echo "::error::forbidden dependency in the normal tree: $crate"
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "Full tree:"
+            cargo tree --locked --edges normal
+            exit 1
+          fi
+          echo "Dependency boundary holds. Normal tree:"
+          cargo tree --locked --edges normal
+
+  package:
+    name: publish dry run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+
+      # Catches bad manifest metadata, a missing readme, or an exclude rule that
+      # drops something the build needs — all of which otherwise surface for the
+      # first time during an actual release.
+      - run: cargo package --locked
+
+      # The pinned ISO vintage is 587 KB and is deliberately not redistributed
+      # in the published artifact. The test files are excluded with it: they are
+      # meaningless without the fixture, and shipping tests that cannot pass is
+      # worse than shipping none.
+      - name: Fixtures stay out of the package
+        run: |
+          if cargo package --locked --list | grep -q '^tests/'; then
+            echo '::error::test files leaked into the package; check the exclude list in Cargo.toml'
+            cargo package --locked --list
+            exit 1
+          fi
+          echo "Package contents:"
+          cargo package --locked --list

@@ -2,6 +2,9 @@
 name = "diurn-mic"
 version = "0.1.0"
 edition = "2021"
+# Applies to building the library. The dev-dependency tree needs 1.85 (proptest
+# -> rand -> getrandom, edition 2024); that is a contributor concern, not a
+# consumer one, so it does not raise this. CI checks the two separately.
 rust-version = "1.82"
 license = "MIT OR Apache-2.0"
 description = "Parser, model, registry, and diff for the ISO 10383 Market Identifier Code registry"
@@ -11,8 +14,10 @@ documentation = "https://docs.rs/diurn-mic"
 readme = "README.md"
 keywords = ["mic", "iso10383", "exchange", "finance", "market"]
 categories = ["parser-implementations", "finance", "data-structures"]
-# The pinned ISO vintage is a test fixture, not part of the published artifact.
-exclude = ["tests/fixtures/*.csv"]
+# Tests are excluded wholesale, not just their fixtures: the golden suite is
+# meaningless without the pinned vintage, and shipping test files that cannot
+# pass is worse than shipping none. Run them from a checkout.
+exclude = ["tests/**", ".github/**"]
 
 [dependencies]
 csv = "1.4"

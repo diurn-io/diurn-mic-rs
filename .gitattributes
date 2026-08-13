@@ -1,0 +1,13 @@
+# Golden fixtures must be byte-identical on every platform. Without this, a
+# Windows checkout rewrites LF to CRLF and the pinned vintage is no longer the
+# file the tests were written against.
+tests/fixtures/** -text
+
+# The Windows-1252 fixture is deliberately not valid UTF-8. Git must not try to
+# be helpful with it.
+tests/fixtures/windows1252.csv binary
+
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
