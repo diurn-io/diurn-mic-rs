@@ -13,7 +13,7 @@ use crate::{CountryCode, Lei, MarketCategory, Mic, OperatingMic};
 /// Note that this says nothing about which market calendar applies — segment
 /// status and parentage are orthogonal to trading hours. `XTKS` is a segment
 /// and `XNYS` is an operating MIC, and both keep an ordinary equity calendar.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum MicKind {
     /// An "entity operating an exchange/market/trade reporting facility in a
     /// specific market/country" (ISO 10383 RA).
@@ -75,6 +75,24 @@ impl fmt::Display for MicKind {
     }
 }
 
+// Serialized as the code that appears in the file — `OPRT`, not `Operating`.
+// Deriving this would emit the Rust variant name, which nothing else in the
+// ecosystem uses and which would disagree with every other code type in this
+// crate.
+impl Serialize for MicKind {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for MicKind {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = <&str>::deserialize(d)?;
+        s.parse()
+            .map_err(|_| serde::de::Error::custom(format!("not a MIC type: {s:?}")))
+    }
+}
+
 /// The registration status of a MIC.
 ///
 /// # `Updated` is a pending state
@@ -91,7 +109,7 @@ impl fmt::Display for MicKind {
 /// 2026-08-24 — precisely the fourth Monday.
 ///
 /// Use [`crate::MicRegistry::as_of`] rather than treating `Updated` as current.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Status {
     Active,
     /// Published but not yet in force. See the type-level note.
@@ -124,6 +142,21 @@ impl FromStr for Status {
 impl fmt::Display for Status {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+// As with `MicKind`: the registry's own spelling, `ACTIVE`, not `Active`.
+impl Serialize for Status {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Status {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = <&str>::deserialize(d)?;
+        s.parse()
+            .map_err(|_| serde::de::Error::custom(format!("not a status: {s:?}")))
     }
 }
 
@@ -213,6 +246,57 @@ mod tests {
         assert_eq!("  SGMT ".parse::<MicKind>().unwrap(), MicKind::Segment);
         assert!("OPERATING".parse::<MicKind>().is_err());
         assert!("".parse::<MicKind>().is_err());
+    }
+
+    /// Every code type in this crate serializes as the spelling the registry
+    /// itself uses. Consumers — the CLI, the API, anything reading their JSON —
+    /// then see one vocabulary rather than two.
+    #[test]
+    fn codes_serialize_as_registry_spellings_not_rust_names() {
+        assert_eq!(
+            serde_json::to_string(&MicKind::Operating).unwrap(),
+            "\"OPRT\""
+        );
+        assert_eq!(
+            serde_json::to_string(&MicKind::Segment).unwrap(),
+            "\"SGMT\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Status::Active).unwrap(),
+            "\"ACTIVE\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Status::Updated).unwrap(),
+            "\"UPDATED\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Status::Expired).unwrap(),
+            "\"EXPIRED\""
+        );
+    }
+
+    #[test]
+    fn codes_deserialize_from_registry_spellings() {
+        assert_eq!(
+            serde_json::from_str::<MicKind>("\"OPRT\"").unwrap(),
+            MicKind::Operating
+        );
+        assert_eq!(
+            serde_json::from_str::<Status>("\"UPDATED\"").unwrap(),
+            Status::Updated
+        );
+        // Parsing is case-insensitive, matching the rest of the crate, so
+        // "active" is accepted as a spelling of ACTIVE. Note the coincidence:
+        // "Active" therefore parses too, but as a case variant of the code —
+        // not because the Rust variant name is a recognised value. `MicKind`
+        // makes that unambiguous, since "Operating" is not a case variant of
+        // OPRT and is rejected.
+        assert_eq!(
+            serde_json::from_str::<Status>("\"active\"").unwrap(),
+            Status::Active
+        );
+        assert!(serde_json::from_str::<MicKind>("\"Operating\"").is_err());
+        assert!(serde_json::from_str::<Status>("\"Pending\"").is_err());
     }
 
     #[test]

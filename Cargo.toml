@@ -29,6 +29,7 @@ thiserror = "2.0"
 
 [dev-dependencies]
 proptest = "1.11"
+serde_json = "1.0"
 
 [lints.rust]
 missing_debug_implementations = "warn"
