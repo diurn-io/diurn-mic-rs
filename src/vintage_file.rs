@@ -105,6 +105,21 @@ fn non_empty(key: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Whether an XDG path is absolute, by POSIX rules rather than the host's.
+///
+/// `Path::is_absolute` asks the *host* what absolute means, and on Windows
+/// `/opt/share` is not — there is no drive letter. `XDG_DATA_HOME` only ever
+/// carries a POSIX path, so the host's opinion is the wrong one to ask.
+///
+/// This was a real bug rather than a test artefact, and it is only visible
+/// because [`Platform`] is a parameter: the XDG branch runs on Windows in CI,
+/// where `is_absolute` quietly returned false and sent every XDG path to the
+/// `HOME` fallback. On a Linux host the two agree, so nothing there would ever
+/// have shown it.
+fn is_posix_absolute(p: &Path) -> bool {
+    p.as_os_str().as_encoded_bytes().first() == Some(&b'/')
+}
+
 /// Whether a path lies inside a snap's private per-revision tree.
 ///
 /// Snap user data lives at `~/snap/<app>/<revision>/`, and several snaps — VS
@@ -113,7 +128,14 @@ fn non_empty(key: &str) -> Option<PathBuf> {
 /// *that* application updates, so anything stored under it silently disappears
 /// on an unrelated upgrade.
 fn is_snap_private(p: &Path) -> bool {
-    p.components().any(|c| c.as_os_str() == "snap")
+    // Split on `/` only, for the same reason `is_posix_absolute` exists: this
+    // sees XDG paths, which are POSIX. `Path::components` would ask the host,
+    // and on Windows that additionally splits `\\` — which is a legal filename
+    // character on the platforms this branch actually runs on.
+    p.as_os_str()
+        .as_encoded_bytes()
+        .split(|b| *b == b'/')
+        .any(|segment| segment == b"snap")
 }
 
 fn resolve(platform: Platform, inputs: &Inputs) -> Result<DataDir, NoDataDir> {
@@ -143,7 +165,7 @@ fn resolve(platform: Platform, inputs: &Inputs) -> Result<DataDir, NoDataDir> {
                 // A relative XDG_DATA_HOME is invalid per the spec, and honouring
                 // one would put the registry somewhere that depends on the
                 // working directory.
-                if xdg.is_absolute() {
+                if is_posix_absolute(xdg) {
                     if !is_snap_private(xdg) {
                         return Ok(plain(xdg.join("diurn")));
                     }
@@ -395,6 +417,45 @@ mod tests {
         let note = d.note.expect("the refusal is explained");
         assert!(note.contains("snap"), "{note}");
         assert!(note.contains(DATA_DIR_ENV), "{note}");
+    }
+
+    /// Snap detection splits on `/` whatever the host thinks a separator is,
+    /// and does not fire on a directory that merely contains the letters.
+    #[test]
+    fn snap_detection_is_posix_and_matches_whole_segments() {
+        for snap in [
+            "/home/x/snap/code/158/.local/share",
+            "/snap/x",
+            "/home/x/snap",
+        ] {
+            assert!(is_snap_private(Path::new(snap)), "{snap}");
+        }
+        for not_snap in [
+            "/home/x/.local/share",
+            "/home/snapshots/x",
+            "/home/x/snapper",
+            "/home/mysnap/x",
+        ] {
+            assert!(!is_snap_private(Path::new(not_snap)), "{not_snap}");
+        }
+    }
+
+    /// The Windows CI failure that found the bug above, kept as a unit test so
+    /// it does not need a Windows runner to catch a regression.
+    #[test]
+    fn xdg_absoluteness_is_posix_not_the_host_s() {
+        for absolute in ["/", "/opt/share", "/home/x/.local/share"] {
+            assert!(is_posix_absolute(Path::new(absolute)), "{absolute}");
+        }
+        for relative in ["share", ".local/share", ""] {
+            assert!(!is_posix_absolute(Path::new(relative)), "{relative}");
+        }
+        // A Windows path is not an XDG path. It never reaches this branch in
+        // production — `Platform::Windows` is chosen there — and it is not
+        // POSIX-absolute if it does.
+        for windows in ["C:/Users/x", "C:\\Users\\x", "\\\\server\\share"] {
+            assert!(!is_posix_absolute(Path::new(windows)), "{windows}");
+        }
     }
 
     #[test]
