@@ -1,6 +1,6 @@
 [package]
 name = "diurn-mic"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 # Applies to building the library. The dev-dependency tree needs 1.85 (proptest
 # -> rand -> getrandom, edition 2024); that is a contributor concern, not a

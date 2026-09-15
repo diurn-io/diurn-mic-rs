@@ -7,6 +7,13 @@
 //! fetch, render, or know anything about market calendars. There is no async
 //! runtime, no HTTP client, and no CLI framework in its dependency tree.
 //!
+//! It also owns the **on-disk convention** for registry files — what a vintage
+//! is named ([`filename_for`], [`classify_filename`]) and where vintages live
+//! ([`data_dir`]). That is here rather than in each tool because two answers to
+//! "where is it" means one of them is eventually wrong on somebody's machine,
+//! and the failure is a command that cannot find a file another command just
+//! wrote. None of it walks a directory or opens anything.
+//!
 //! # Loading never fails on one bad row
 //!
 //! ISO will eventually ship a malformed record. That must degrade, not fail, so
@@ -90,9 +97,11 @@ mod published;
 mod record;
 mod registry;
 mod validate;
+mod vintage_file;
 
 pub use category::MarketCategory;
 pub use country::CountryCode;
+
 pub use diff::{diff, FieldChange, MicDiff, RecordChange};
 pub use issue::{Issue, IssueKind, Severity};
 pub use lei::Lei;
@@ -102,6 +111,10 @@ pub use published::{publication_date_from_effective, PublishedSource};
 pub use record::{MicKind, MicRecord, Status};
 pub use registry::MicRegistry;
 pub use validate::validate;
+pub use vintage_file::{
+    classify_filename, data_dir, filename_for, published_from_filename, DataDir, NoDataDir,
+    VintageName, DATA_DIR_ENV,
+};
 
 /// Compiles the README's examples as doctests without publishing them into the
 /// API docs.
